@@ -1,5 +1,5 @@
+#include <pthread.h>
 #include <sys/resource.h>
-
 #include <sys/wait.h>
 #include <unistd.h>
 #include <stdbool.h>
@@ -12,6 +12,7 @@
 
 #define MAX_STR_LEN 512
 #define NUM_COMMANDS 5
+#define MAX_CHILDREN 256
 
 /**********************************************************************
  * (Descripton)
@@ -21,12 +22,12 @@
 
 void sighandler(int signum);
 pid_t createServer(int minProcs, int maxProcs, char * serverName);
-void abortServer(char * serverName);
+void abortServer(pid_t pid);
 void createProcess(char * serverName);
 void abortProcess(char * serverName);
 void displayStatus();
 struct userCommand parseCommand(char * command);
-void executeCommand(struct userCommand);
+pid_t executeCommand(struct userCommand);
 
 struct userCommand{
 	char *command;
@@ -34,7 +35,9 @@ struct userCommand{
 	int miniProcs;
 	int maxProcs;
 	bool valid;
+	pid_t pid;
 };
+
 
 /**********************************************************************
  * Main method used for the execution of the Process Management
@@ -48,7 +51,8 @@ int main(){
 	char * command;
 	struct userCommand userCommand;
 	userCommand.valid = false;
-	pid_t webServer, fileServer;
+	struct userCommand serverList[MAX_CHILDREN];
+	int serverCounter = 0;
 
 	while(1){
 		command = (char *)malloc(MAX_STR_LEN * sizeof(char));
@@ -58,7 +62,8 @@ int main(){
 			free(command);
 			continue;
 		}
-		executeCommand(userCommand);
+		serverList[serverCounter].pid = executeCommand(userCommand);
+		serverCounter++;
 		free(command);
 	}
 	return 0;
@@ -70,12 +75,12 @@ int main(){
  *
  * Params:	c:	A userCommand struct containing inputted info
  *********************************************************************/
-void executeCommand(struct userCommand c){
+pid_t executeCommand(struct userCommand c){
 	if(!strcmp(c.command, "createserver")){
-		createServer(c.miniProcs, c.maxProcs, c.serverName);
+		return createServer(c.miniProcs, c.maxProcs, c.serverName);
 	}
 	else if(!strcmp(c.command, "abortserver")){
-		abortServer(c.serverName);
+		abortServer(c.pid);
 	}
 	else if(!strcmp(c.command, "createprocess")){
 		createProcess(c.serverName);
@@ -88,6 +93,7 @@ void executeCommand(struct userCommand c){
 	}else{
 		printf("false!\n");
 	}
+	return 0; 
 }
 
 
@@ -180,14 +186,19 @@ struct userCommand parseCommand(char * command){
 void sighandler(int signum){
 	int status;
 	struct rusage usage;
-	pid_t pid;
+
+	//interrupt from child to parent tells parent to wait
 	if(signum == SIGUSR1){
-		wait4(pid, &status, 0, &usage);
+		wait3(&status, 0, &usage);
 		printf("Child process terminated\n");
 	}
+	//interrupt from parent to child, then
+	//child will send sigusr1 to parent
 	else if(signum == SIGUSR2){
+		kill(getppid(), SIGUSR1);
 		exit(0);
 	}
+	//terminates entire program
 	else if(signum == SIGINT){
 		exit(0);	
 	}
@@ -213,7 +224,7 @@ pid_t createServer(int minProcs, int maxProcs, char * serverName){
 	else if(pid == 0){ //child
 		int i;
 		for(i = 0; i < minProcs; i++){
-			sleep(10);	
+			sleep(10);
 			//if done, signal to parent
 			kill(getppid(), SIGUSR1);
 			exit(0);
@@ -232,8 +243,8 @@ pid_t createServer(int minProcs, int maxProcs, char * serverName){
  *
  * Params:	serverName: The name of the server to be aborted 
  *********************************************************************/
-void abortServer(char * serverName){
-		
+void abortServer(pid_t pid){
+	//kill(pid, SIGUSR2);		
 }
 
 
