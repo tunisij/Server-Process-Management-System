@@ -7,7 +7,6 @@
 #include <stdio.h>
 #include <signal.h>
 #include <stdlib.h>
-#include <regex.h>
 #include <ctype.h>
 
 #define MAX_STR_LEN 512
@@ -21,23 +20,17 @@
  *********************************************************************/
 
 void sighandler(int signum);
-pid_t createServer(int minProcs, int maxProcs, char * serverName);
-void abortServer(pid_t pid);
+void createServer(char * serverName, int minProcs, int maxProcs);
+void abortServer(char * serverName);
 void createProcess(char * serverName);
 void abortProcess(char * serverName);
 void displayStatus();
-struct userCommand parseCommand(char * command);
-pid_t executeCommand(struct userCommand);
+bool parseCommand(char * command);
 
-struct userCommand{
-	char *command;
-	char *serverName;
-	int miniProcs;
-	int maxProcs;
-	bool valid;
-	pid_t pid;
-};
-
+int numServers;
+int numProcesses;
+pid_t childPid[MAX_CHILDREN];
+char *childName[MAX_CHILDREN];
 
 /**********************************************************************
  * Main method used for the execution of the Process Management
@@ -47,53 +40,19 @@ int main(){
 	signal(SIGINT, sighandler);
 	signal(SIGUSR1, sighandler);
 	signal(SIGUSR2, sighandler);
-
 	char * command;
-	struct userCommand userCommand;
-	userCommand.valid = false;
-	struct userCommand serverList[MAX_CHILDREN];
-	int serverCounter = 0;
+	numServers = 0;
+	numProcesses = 0;
 
 	while(1){
 		command = (char *)malloc(MAX_STR_LEN * sizeof(char));
 		fgets(command, MAX_STR_LEN, stdin); 
-		userCommand = parseCommand(command);
-		if(!userCommand.valid){
-			free(command);
+		if(!parseCommand(command)){
 			continue;
 		}
-		serverList[serverCounter].pid = executeCommand(userCommand);
-		serverCounter++;
-		free(command);
 	}
+	free(command);
 	return 0;
-}
-
-
-/**********************************************************************
- * Executes the appropriate function based on the user command
- *
- * Params:	c:	A userCommand struct containing inputted info
- *********************************************************************/
-pid_t executeCommand(struct userCommand c){
-	if(!strcmp(c.command, "createserver")){
-		return createServer(c.miniProcs, c.maxProcs, c.serverName);
-	}
-	else if(!strcmp(c.command, "abortserver")){
-		abortServer(c.pid);
-	}
-	else if(!strcmp(c.command, "createprocess")){
-		createProcess(c.serverName);
-	}
-	else if(!strcmp(c.command, "abortprocess")){
-		abortProcess(c.serverName);
-	}
-	else if(!strcmp(c.command, "displaystatus")){
-		displayStatus();
-	}else{
-		printf("false!\n");
-	}
-	return 0; 
 }
 
 
@@ -102,81 +61,73 @@ pid_t executeCommand(struct userCommand c){
  *
  * Params:	command:	The string of characters inputted by the user
  *********************************************************************/
-struct userCommand parseCommand(char * command){
+bool parseCommand(char * cmd){
+	strtok(cmd, "\n");
+	char *pch = strtok(cmd, " ");
 	char *commandList[NUM_COMMANDS] = {"createserver", "createprocess", "abortserver", "abortprocess", "displaystatus"};
-	struct userCommand userCommand;
 
 	//help	
-	if(strstr(command, "-help")){
-		char *commandArgs[NUM_COMMANDS] = {"<MIN_PROCESSES> <MAX_PROCESSES> <SERVERNAME>", "<SERVERNAME>", "<SERVERNAME>", "<SERVERNAME>", "<NONE>"};
+	if(strstr(cmd, "-help")){
+		char *commandArgs[NUM_COMMANDS] = {"<MIN_PROCESSES> <MAX_PROCESSES> <SERVERNAME>",
+		   	"<SERVERNAME>", "<SERVERNAME>", "<SERVERNAME>", "<NONE>"};
 		printf("Commands list:\n");
 		int i;
 		for(i = 0; i < NUM_COMMANDS; i++){
 			printf("%s\t%s\n", commandList[i], commandArgs[i]);
 		}
-		userCommand.valid = false;
-		return userCommand;
 	}
-	
-	char *pch = strtok(command, " ");
 	//createserver
-	if(!strcmp(command, commandList[0])){
-		userCommand.command = commandList[0];
-		pch = strtok(NULL, " ");
-		if(pch != NULL)
-			userCommand.miniProcs = atoi(pch);
-		pch = strtok(NULL, " ");
-		if(pch != NULL)
-			userCommand.maxProcs = atoi(pch);
+	else if(!strcmp(cmd, commandList[0])){
+		int minProcs, maxProcs;
+		char * serverName;
 		pch = strtok(NULL, " ");
 		if(pch != NULL){
-			userCommand.serverName = pch;
-			userCommand.valid = true;
+			minProcs = atoi(pch);
 		}
-	}
-	//createprocess
-	else if(!strcmp(command, commandList[1])){
-		userCommand.command = commandList[1];
 		pch = strtok(NULL, " ");
 		if(pch != NULL){
-			userCommand.serverName = pch;
-			userCommand.valid = true;
+			maxProcs = atoi(pch);
 		}
-	}
-	//abortserver
-	else if(!strcmp(command, commandList[2])){
-		userCommand.command = commandList[2];
 		pch = strtok(NULL, " ");
 		if(pch != NULL){
-			userCommand.serverName = pch;
-			userCommand.valid = true;
+			serverName = pch;
+			printf("\nServer Name: %s\nminProcs: %d\nmaxProcs: %d\n\n", serverName, minProcs, maxProcs);
+			createServer(serverName, minProcs, maxProcs);
 		}
 	}
-	//abortprocess
-	else if(!strcmp(command, commandList[3])){
-		userCommand.command = commandList[3];
+	//create process
+	else if(!strcmp(cmd, commandList[1])){
 		pch = strtok(NULL, " ");
-		if(pch != NULL){
-			userCommand.serverName = pch;
-			userCommand.valid = true;
-		}
+		char *serverName = pch;
+		createProcess(serverName);
 	}
-	//displaystatus
-	else if(strstr(command, commandList[4])){
-		userCommand.command = commandList[4];
-		userCommand.valid = true;
+	//abort server
+	else if(!strcmp(cmd, commandList[2])){
+		pch = strtok(NULL, " ");
+		char *serverName = pch;
+		abortServer(serverName);
+	}
+	//abort process
+	else if(!strcmp(cmd, commandList[3])){
+		pch = strtok(NULL, " ");
+	//	char *serverName = pch;
+		//abortProcess(serverName);
+	}
+	//display status
+	else if(!strcmp(cmd, commandList[4])){
+		displayStatus();
 	}
 	else{
-		userCommand.valid = false;
 		printf("Invalid command. Type -help for a list of commands\n");
+		return false;
 	}
-//	printf("cmd: %s\n", userCommand.command);
-//	printf("miniprocs: %d\n", userCommand.miniProcs);
-//	printf("maxprocs: %d\n", userCommand.maxProcs);
-//	printf("name: %s\n", userCommand.serverName);
-	return userCommand;
-}
+	return true;
 
+	//	printf("cmd: %s\n", userCommand.command);
+	//	printf("miniprocs: %d\n", userCommand.miniProcs);
+	//	printf("maxprocs: %d\n", userCommand.maxProcs);
+	//	printf("name: %s\n", userCommand.serverName);
+}
 
 /**********************************************************************
  * Handles an interrupt signal
@@ -184,26 +135,18 @@ struct userCommand parseCommand(char * command){
  * Params:	signum:		The argument of a received signal
  *********************************************************************/
 void sighandler(int signum){
-	int status;
-	struct rusage usage;
-
-	//interrupt from child to parent tells parent to wait
+	//child exits
 	if(signum == SIGUSR1){
-		wait3(&status, 0, &usage);
-		printf("Child process terminated\n");
-	}
-	//interrupt from parent to child, then
-	//child will send sigusr1 to parent
-	else if(signum == SIGUSR2){
-		kill(getppid(), SIGUSR1);
+		printf("[SERVER]: I am exiting.\n");
 		exit(0);
+	}
+	else if(signum == SIGUSR2){
 	}
 	//terminates entire program
 	else if(signum == SIGINT){
 		exit(0);	
 	}
 }
-
 
 /**********************************************************************
  * Creates a server	by forking a process
@@ -214,9 +157,8 @@ void sighandler(int signum){
  * 		  				handled at once
  * 		  	serverName: The name of the server to create
  *********************************************************************/
-pid_t createServer(int minProcs, int maxProcs, char * serverName){
+void createServer(char *serverName, int minProcs, int maxProcs){
 	pid_t pid;
-	
 	if((pid = fork()) < 0){ //error
 		perror("Fork failure");
 		exit(1);
@@ -224,17 +166,22 @@ pid_t createServer(int minProcs, int maxProcs, char * serverName){
 	else if(pid == 0){ //child
 		int i;
 		for(i = 0; i < minProcs; i++){
-			sleep(10);
-			//if done, signal to parent
-			kill(getppid(), SIGUSR1);
-			exit(0);
+		    sprintf(serverName, "server %d", i);
+			printf("Process created: %s\n", serverName);
+			createProcess(serverName);
 		}
+		printf("\n");
+		sleep(100);
+		//if done, signal to parent
+		//	kill(getppid(), SIGUSR1);
+		//	exit(0);
 	}
 	else{ //parent
-
+		childPid[numServers] = pid;
+		childName[numServers] = serverName;
+		numServers++;
 	}
-	printf("\nCreated server.\nMIN_PROCESSES:\t%d\nMAX_PROCESSES:\t%d\nSERVER_NAME:\t%s\n", minProcs, maxProcs, serverName);
-	return pid;
+//	printf("\nCreated server.\nMIN_PROCESSES:\t%d\nMAX_PROCESSES:\t%d\nSERVER_NAME:\t%s\n", cmd.minProcs, cmd.maxProcs, cmd.serverName);
 }
 
 
@@ -243,8 +190,17 @@ pid_t createServer(int minProcs, int maxProcs, char * serverName){
  *
  * Params:	serverName: The name of the server to be aborted 
  *********************************************************************/
-void abortServer(pid_t pid){
-	//kill(pid, SIGUSR2);		
+void abortServer(char * serverName){
+	//strtok(serverName, "\n");
+	int status;
+	int i;
+	for(i = 0; i < numServers; i++){
+		if(!strcmp(childName[i], serverName)){
+			kill(childPid[i], SIGUSR1);
+			wait(&status);
+		}
+	}	
+	numServers--;
 }
 
 
@@ -255,7 +211,7 @@ void abortServer(pid_t pid){
  * 						process will become a child
  *********************************************************************/
 void createProcess(char * serverName){
-
+	numProcesses++;
 }
 
 
@@ -266,7 +222,7 @@ void createProcess(char * serverName){
  * 						process will be aborted
  *********************************************************************/
 void abortProcess(char * serverName){
-
+	numProcesses--;
 }
 
 
@@ -275,5 +231,7 @@ void abortProcess(char * serverName){
  * all child servers and processes
  *********************************************************************/
 void displayStatus(){
-
+	printf("Servers running: %d\n", numServers);
+	printf("Child processes running: %d\n", numProcesses); 
+	printf("\n");
 }
