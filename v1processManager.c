@@ -1,4 +1,5 @@
 #include <pthread.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <stdbool.h>
@@ -7,24 +8,13 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <ctype.h>
-#include <time.h>
 
 #define MAX_STR_LEN 512
 #define NUM_COMMANDS 5
 #define MAX_CHILDREN 256
 
-
 /**********************************************************************
- * Simulates a server process management system.
- * A server is forked off and then creates copies of itself based
- * on the minimum number of processes provided.
- * 
- * The manager has the following capabilities:
- * createServer
- * abortServer
- * createProcess
- * abortProcess
- * displayStatus
+ * (Descripton)
  *
  * Author: John Tunisi
  *********************************************************************/
@@ -32,22 +22,19 @@
 void sighandler(int signum);
 void createServer(char * serverName, int minProcs, int maxProcs);
 void abortServer(char * serverName);
-void createProcess();
-void abortProcess();
+void createProcess(char * serverName);
+void abortProcess(char * serverName);
 void displayStatus();
 bool parseCommand(char * command);
+void *childProcessFunction(void *arg);
 
-int numActive;
+int numServers;
 int numProcesses;
 int totalServers;
 pid_t childPid[MAX_CHILDREN];
 char *childName[MAX_CHILDREN];
-pthread_mutex_t lock;
-int min_processes;
-int max_processes;
-char *myName;
-char *serverList[MAX_CHILDREN];
-
+int minProcesses[MAX_CHILDREN];
+int maxProcesses[MAX_CHILDREN];
 
 /**********************************************************************
  * Main method used for the execution of the Process Management
@@ -58,18 +45,11 @@ int main(){
 	signal(SIGUSR1, sighandler);
 	signal(SIGUSR2, sighandler);
 	char * command;
-	numActive = 0;
+	numServers = 0;
 	numProcesses = 0;
 	totalServers = 0;
-	min_processes = -1;
-	max_processes = -1;
 	srand(time(NULL));
-
-	if(pthread_mutex_init(&lock, NULL) != 0){
-		printf("mutex failed init\n");
-		return 1;
-	}
-
+		
 	while(1){
 		command = (char *)malloc(MAX_STR_LEN * sizeof(char));
 		fgets(command, MAX_STR_LEN, stdin); 
@@ -85,7 +65,7 @@ int main(){
 /**********************************************************************
  * Parses the command received from the user
  *
- * Params:	cmd:	The string of characters inputted by the user
+ * Params:	command:	The string of characters inputted by the user
  *********************************************************************/
 bool parseCommand(char * cmd){
 	strtok(cmd, "\n");
@@ -95,7 +75,7 @@ bool parseCommand(char * cmd){
 	//help	
 	if(strstr(cmd, "-help")){
 		char *commandArgs[NUM_COMMANDS] = {"<MIN_PROCESSES> <MAX_PROCESSES> <SERVERNAME>",
-			"<SERVERNAME>", "<SERVERNAME>", "<SERVERNAME>", "<NONE>"};
+		   	"<SERVERNAME>", "<SERVERNAME>", "<SERVERNAME>", "<NONE>"};
 		printf("Commands list:\n");
 		int i;
 		for(i = 0; i < NUM_COMMANDS; i++){
@@ -113,25 +93,10 @@ bool parseCommand(char * cmd){
 		pch = strtok(NULL, " ");
 		if(pch != NULL){
 			maxProcs = atoi(pch);
-			if(minProcs < 0 || maxProcs < 0){
-				printf("Cannot be below 0\n\n");
-				return false;
-			}
-			if(maxProcs < minProcs){
-				printf("MaxProcs must be greater than MinProcs!\n\n");
-				return false;
-			}
 		}
 		pch = strtok(NULL, " ");
 		if(pch != NULL){
-			int i;
-			for(i = 0; serverList[i]; i++){
-				if(!strcmp(pch, serverList[i])){
-					printf("Cannot reuse server names!\n\n");
-					return false;
-				}
-			}
-			myName = serverName = pch;
+			serverName = pch;
 			printf("\nServer Name: %s\nminProcs: %d\nmaxProcs: %d\n\n", serverName, minProcs, maxProcs);
 			createServer(serverName, minProcs, maxProcs);
 		}
@@ -139,14 +104,8 @@ bool parseCommand(char * cmd){
 	//create process
 	else if(!strcmp(cmd, commandList[1])){
 		pch = strtok(NULL, " ");
-		int i;
-		for(i = 0; i < totalServers; i++){
-			if(!strcmp(childName[i], pch)){
-				kill(childPid[i], SIGUSR2);
-				return true;
-			}
-		}
-		printf("\nCould not add a process for that server\n");
+		char *serverName = pch;
+		createProcess(serverName);
 	}
 	//abort server
 	else if(!strcmp(cmd, commandList[2])){
@@ -157,13 +116,8 @@ bool parseCommand(char * cmd){
 	//abort process
 	else if(!strcmp(cmd, commandList[3])){
 		pch = strtok(NULL, " ");
-		int i;
-		for(i = 0; i < totalServers; i++){
-			if(!strcmp(childName[i], pch)){
-				kill(childPid[i], SIGUSR1);
-				return true;
-			}
-		}
+		char *processName = pch;
+		abortProcess(processName);
 	}
 	//display status
 	else if(!strcmp(cmd, commandList[4])){
@@ -174,6 +128,11 @@ bool parseCommand(char * cmd){
 		return false;
 	}
 	return true;
+
+	//	printf("cmd: %s\n", userCommand.command);
+	//	printf("miniprocs: %d\n", userCommand.miniProcs);
+	//	printf("maxprocs: %d\n", userCommand.maxProcs);
+	//	printf("name: %s\n", userCommand.serverName);
 }
 
 /**********************************************************************
@@ -182,32 +141,17 @@ bool parseCommand(char * cmd){
  * Params:	signum:		The argument of a received signal
  *********************************************************************/
 void sighandler(int signum){
-	//parent to child: abort a process
+	//child exits
 	if(signum == SIGUSR1){
-		abortProcess();
-		numActive--;
+		printf("[SERVER]: I am exiting.\n");
+		exit(0);
 	}
-	//parent to child: create a process
 	else if(signum == SIGUSR2){
-		createProcess();
-		numActive++;
-		totalServers++;
 	}
 	//terminates entire program
 	else if(signum == SIGINT){
-		int i, status;
-		for(i = 0; i < totalServers; i++){
-			if(!strcmp(childName[i], myName)){
-				kill(childPid[i], SIGINT);
-				wait(&status);
-			}
-		}	
-		printf("I am exiting.\n");
-		pthread_mutex_lock(&lock);
-		numActive--;
-		pthread_mutex_unlock(&lock);
 		exit(0);	
-	}	
+	}
 }
 
 /**********************************************************************
@@ -222,28 +166,31 @@ void sighandler(int signum){
 void createServer(char *serverName, int minProcs, int maxProcs){
 	pid_t pid;
 	if((pid = fork()) < 0){ //error
-		perror("Fork failure\n");
+		perror("Fork failure");
 		exit(1);
 	}
 	else if(pid == 0){ //child
-		myName = serverName;
-		min_processes = minProcs;
-		max_processes = maxProcs;
 		int i;
 		for(i = 0; i < minProcs; i++){
+		    sprintf(serverName, "server %d", i);
+			printf("Process created: %s\n", serverName);
 			createProcess(serverName);
 		}
-		pause();
+		printf("\n");
+		sleep(rand() % 50);
+		//if done, signal to parent
+		//	kill(getppid(), SIGUSR1);
+		//	exit(0);
 	}
 	else{ //parent
 		childPid[totalServers] = pid;
 		childName[totalServers] = serverName;
-		pthread_mutex_lock(&lock);
-		serverList[totalServers] = serverName;
+		minProcesses[totalServers] = minProcs;
+		maxProcesses[totalServers] = maxProcs;
 		totalServers++;
-		numActive++;
-		pthread_mutex_unlock(&lock);
+		numServers++;
 	}
+//	printf("\nCreated server.\nMIN_PROCESSES:\t%d\nMAX_PROCESSES:\t%d\nSERVER_NAME:\t%s\n", cmd.minProcs, cmd.maxProcs, cmd.serverName);
 }
 
 
@@ -255,75 +202,75 @@ void createServer(char *serverName, int minProcs, int maxProcs){
 void abortServer(char * serverName){
 	int i;
 	int status;
+//	for(i = 0; i < numServers; i++){
 	for(i = 0; i < totalServers; i++){
 		if(!strcmp(childName[i], serverName)){
-			//kill(childPid[i], SIGUSR1);
-			kill(childPid[i], SIGINT);
+			kill(childPid[i], SIGUSR1);
 			wait(&status);
 		}
 	}	
-	pthread_mutex_lock(&lock);
-	numActive--;
-	pthread_mutex_unlock(&lock);
+	numServers--;
 }
 
 
 /**********************************************************************
- * Creates a process for the current server
+ * Creates a process for a given server
+ *
+ * Params:	serverName: The name of the parent server to which this
+ * 						process will become a child
  *********************************************************************/
-void createProcess(){
-	if(numActive == max_processes){
-		printf("Cannot create more processes!\n");
-		return;
-	}
+void createProcess(char * serverName){
+	pthread_t thread;
+	int status;
 
-	pid_t pid;
-	if((pid = fork()) < 0){ //error
-		perror("Fork failure\n");
+	if((status = pthread_create(&thread, NULL, childProcessFunction, NULL))){
+		fprintf(stderr, "thread create error %d: %s\n", status, strerror(status));
 		exit(1);
 	}
-	else if(pid == 0){ //child
-		printf("Process added\n");
-		pause();
-	}
-	else{ //parent
-		childPid[totalServers] = pid;
-		childName[totalServers] = myName;
-		pthread_mutex_lock(&lock);
-		totalServers++;
-		numActive++;
-		pthread_mutex_unlock(&lock);
-	}
+	printf("Created process: %s\n", serverName);
+	numProcesses++;
 }
 
 
 /**********************************************************************
- * Aborts a process for the current server
+ * Aborts a process for a given server
+ *
+ * Params:	serverName: The name of the parent server to which a
+ * 						process will be aborted
  *********************************************************************/
-void abortProcess(){
-	int i, status;
-	printf("serverName: %s\n", myName);
+void abortProcess(char * serverName){
+	int i;
+	printf("serverName: %s\n", serverName);
 	for(i = 0; i < MAX_CHILDREN; i++){
-		if((!strcmp(myName, childName[i])) && (getpid() != childPid[i])){
-			if(!(numActive > min_processes)){
-				printf("Cannot abort process!\n");
+		printf("childName: %s\n", childName[i]);
+		if(!strcmp(serverName, childName[i])){
+			if(!(numServers > minProcesses[i])){
+				printf("Cannot abort process!");
 				return;
 			}
-			kill(childPid[i], SIGINT);
-			wait(&status);
-			break;
 		}
 	}
-	pthread_mutex_lock(&lock);
-	numActive--;
-	pthread_mutex_unlock(&lock);
+	numProcesses--;
+	//if numprocesses < minProcs
+	//create new process
 }
 
 
 /**********************************************************************
- * Displays the current state of the Process Management System
+ * Displays the current state of the Process Management System and
+ * all child servers and processes
  *********************************************************************/
 void displayStatus(){
-	printf("Original servers running: %d\n", numActive);
+	printf("Servers running: %d\n", numServers);
+	printf("Child processes running: %d\n", numProcesses); 
 	printf("\n");
+}
+
+
+/**********************************************************************
+ *
+ *********************************************************************/
+void *childProcessFunction(void *arg){
+	sleep(rand() % 50);
+	return arg;
 }
